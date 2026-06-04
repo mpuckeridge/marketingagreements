@@ -148,9 +148,7 @@
       <span class="dot" id="dot"></span>
       <span id="status-txt">Loading…</span>
     </div>
-    <a class="sheet-link" href="https://docs.google.com/spreadsheets/d/1ch3V3FTd5nsRmoBDBHtDjGcwZNb5R_M9WgLyqEjX7Sk" target="_blank">
-      <i class="ti ti-table" style="font-size:14px;"></i> Sheet
-    </a>
+
     <button class="btn-add" onclick="openBizModal()">
       <i class="ti ti-plus"></i> Add business
     </button>
@@ -228,16 +226,14 @@
 </div>
 
 <script>
-const SHEET_ID = '1ch3V3FTd5nsRmoBDBHtDjGcwZNb5R_M9WgLyqEjX7Sk';
-const API = 'https://api.anthropic.com/v1/messages';
-const MODEL = 'claude-sonnet-4-20250514';
-
 // Data: [{id, name, contact, role, email, projects:[{id, name, commission, stages:[{desc,amount}]}]}]
 let businesses = [];
 let editBizIdx = null;
 let editProjBizIdx = null;
 let editProjIdx = null;
 let sc = 0;
+
+const STORAGE_KEY = 'marketing_agreements_v1';
 
 function uid() { return Math.random().toString(36).slice(2,9); }
 function initials(n) { return (n||'?').split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2); }
@@ -248,79 +244,27 @@ function setStatus(state, txt) {
   document.getElementById('status-txt').textContent = txt;
 }
 
-async function claude(prompt) {
-  const r = await fetch(API, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 2000,
-      system: 'You are a data assistant. Always respond with only valid JSON, no markdown fences, no explanation.',
-      messages: [{ role: 'user', content: prompt }],
-      mcp_servers: [{ type: 'url', url: 'https://drivemcp.googleapis.com/mcp/v1', name: 'gdrive' }]
-    })
-  });
-  const d = await r.json();
-  return d.content.filter(b=>b.type==='text').map(b=>b.text).join('');
-}
-
-// Sheet format: one row per project
-// Columns: Business Name | Key Contact | Role | Invoicing Email | Project Name | Commission Type | Inv1 Desc | Inv1 Amt | Inv2 Desc | Inv2 Amt | Inv3 Desc | Inv3 Amt | Inv4 Desc | Inv4 Amt
-
-async function load() {
+function load() {
   setStatus('syncing','Loading…');
   try {
-    const raw = await claude(
-      `Read the Google Sheet with file ID "${SHEET_ID}" using Google Drive tools. ` +
-      `Columns: Business Name, Key Contact, Role, Invoicing Email, Project Name, Commission Type, Invoice 1 Description, Invoice 1 Amount, Invoice 2 Description, Invoice 2 Amount, Invoice 3 Description, Invoice 3 Amount, Invoice 4 Description, Invoice 4 Amount. ` +
-      `Return a JSON array where each element is a row (skip header): {business, contact, role, email, project, commission, stages:[{desc,amount}]}. ` +
-      `If empty return [].`
-    );
-    const rows = JSON.parse(raw.replace(/```json|```/g,'').trim());
-    // Group by business name
-    const map = {};
-    const order = [];
-    for (const row of (Array.isArray(rows)?rows:[])) {
-      const key = (row.business||'').toLowerCase().trim();
-      if (!map[key]) {
-        map[key] = { id: uid(), name: row.business||'', contact: row.contact||'', role: row.role||'', email: row.email||'', projects: [] };
-        order.push(key);
-      }
-      if (row.project) {
-        map[key].projects.push({ id: uid(), name: row.project||'', commission: row.commission||'', stages: row.stages||[] });
-      }
-    }
-    businesses = order.map(k => map[k]);
-    setStatus('ok','Synced');
+    const saved = localStorage.getItem(STORAGE_KEY);
+    businesses = saved ? JSON.parse(saved) : [];
+    setStatus('ok','All changes saved');
   } catch(e) {
     businesses = [];
-    setStatus('error','Load failed');
+    setStatus('error','Could not load data');
   }
   document.getElementById('loader').style.display = 'none';
   render();
 }
 
-async function push() {
-  setStatus('syncing','Saving…');
-  const hdr = 'Business Name,Key Contact,Role,Invoicing Email,Project Name,Commission Type,Invoice 1 Description,Invoice 1 Amount,Invoice 2 Description,Invoice 2 Amount,Invoice 3 Description,Invoice 3 Amount,Invoice 4 Description,Invoice 4 Amount';
-  const rows = [];
-  for (const b of businesses) {
-    if (!b.projects.length) {
-      // Business with no projects — still write one row
-      rows.push([b.name, b.contact, b.role, b.email, '', '', '', '', '', '', '', '', '', ''].map(c=>`"${String(c).replace(/"/g,'""')}"`).join(','));
-    } else {
-      for (const p of b.projects) {
-        const cols = [b.name, b.contact, b.role, b.email, p.name, p.commission];
-        for (let i=0;i<4;i++) { cols.push(p.stages[i]?.desc||''); cols.push(p.stages[i]?.amount||''); }
-        rows.push(cols.map(c=>`"${String(c||'').replace(/"/g,'""')}"`).join(','));
-      }
-    }
-  }
-  const csv = [hdr, ...rows].join('\n');
+function push() {
   try {
-    await claude(`Update Google Sheet ID "${SHEET_ID}" via Google Drive tools. Replace all content with this CSV:\n\n${csv}\n\nReturn {"ok":true}.`);
-    setStatus('ok','Saved to sheet');
-  } catch(e) { setStatus('error','Save failed'); }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(businesses));
+    setStatus('ok','All changes saved');
+  } catch(e) {
+    setStatus('error','Could not save');
+  }
 }
 
 function render() {
@@ -406,21 +350,20 @@ function openBizModal(idx) {
   document.getElementById('biz-overlay').classList.add('open');
 }
 function closeBizModal() { document.getElementById('biz-overlay').classList.remove('open'); editBizIdx=null; }
-async function saveBiz() {
+function saveBiz() {
   const name = document.getElementById('b-name').value.trim();
   if (!name) { alert('Please enter a business name.'); return; }
   const btn = document.getElementById('biz-save-btn');
-  btn.disabled=true; btn.textContent='Saving…';
   const obj = { id: editBizIdx!==null?businesses[editBizIdx].id:uid(), name, contact:document.getElementById('b-contact').value.trim(), role:document.getElementById('b-role').value.trim(), email:document.getElementById('b-email').value.trim(), projects: editBizIdx!==null?businesses[editBizIdx].projects:[] };
   if (editBizIdx!==null) businesses[editBizIdx]=obj; else businesses.push(obj);
   closeBizModal();
   render();
-  await push();
+  push();
   btn.disabled=false; btn.innerHTML='<i class="ti ti-device-floppy"></i> Save business';
 }
-async function delBiz(bi) {
+function delBiz(bi) {
   if (!confirm(`Remove ${businesses[bi].name} and all its projects?`)) return;
-  businesses.splice(bi,1); render(); await push();
+  businesses.splice(bi,1); render(); push();
 }
 
 // --- Project modal ---
@@ -470,22 +413,21 @@ function getStages() {
     .map(el=>{const n=el.id.replace('se-','');return{desc:document.getElementById('sd-'+n)?.value.trim()||'',amount:document.getElementById('sa-'+n)?.value.trim()||''};})
     .filter(s=>s.desc||s.amount);
 }
-async function saveProj() {
+function saveProj() {
   const name = document.getElementById('p-name').value.trim();
   if (!name) { alert('Please enter a project name.'); return; }
   const btn = document.getElementById('proj-save-btn');
-  btn.disabled=true; btn.textContent='Saving…';
   const obj = { id: editProjIdx!==null?businesses[editProjBizIdx].projects[editProjIdx].id:uid(), name, commission:document.getElementById('p-commission').value.trim(), stages:getStages() };
   if (editProjIdx!==null) businesses[editProjBizIdx].projects[editProjIdx]=obj;
   else businesses[editProjBizIdx].projects.push(obj);
   closeProjModal();
   render();
-  await push();
+  push();
   btn.disabled=false; btn.innerHTML='<i class="ti ti-device-floppy"></i> Save project';
 }
-async function delProj(bi,pi) {
+function delProj(bi,pi) {
   if (!confirm('Remove this project?')) return;
-  businesses[bi].projects.splice(pi,1); render(); await push();
+  businesses[bi].projects.splice(pi,1); render(); push();
 }
 
 load();
